@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Smart Target - 3s Temporal Engine</title>
+    <title>Smart Target - 3s Temporal Engine (v2)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
     
@@ -37,7 +37,7 @@
         
         #status { color: #ffaa00; font-size: 14px; font-weight: bold; text-align: right; }
         
-        /* Debug Console to catch silent errors */
+        /* Debug Console */
         #debugLog { position: absolute; bottom: 0; left: 0; width: 100%; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.8); color: #ff4444; font-family: monospace; font-size: 12px; z-index: 9999; padding: 10px; display: none; box-sizing: border-box;}
     </style>
 </head>
@@ -103,10 +103,12 @@
     let procW = 640, procH = 480;
     let orb = null, matcher = null, refKP = null, refDesc = null, refGray = null;
     let cropSize = 0, targetRadius = 0, targetCenter = { x: 0, y: 0 };
-    let baselineScreenCenter = { x: 0, y: 0 }; // NEW: Saves absolute screen position
     
-    const PROXIMITY = 15.0;
-    const REQ_FRAMES = 5; 
+    // UPDATED TUNING PARAMETERS
+    const OLD_HOLE_TOLERANCE = 25.0; // Deadzone around old holes
+    const PROXIMITY = 22.0;          // Tolerance for tracking a new hole
+    const REQ_FRAMES = 6;            // Frames required to confirm a hit
+    
     let candidates = [];
     let isScanning = false;
     let scanStartTime = 0;
@@ -117,7 +119,7 @@
     // 3. OPENCV INITIALIZATION HOOK
     var Module = { 
         onRuntimeInitialized: function() { 
-            setTimeout(initApp, 500); // Give DOM half a second to settle
+            setTimeout(initApp, 500); 
         } 
     };
 
@@ -127,7 +129,7 @@
             document.getElementById('status').innerText = "Loading Saved Data...";
             document.getElementById('status').style.color = "#ffaa00";
 
-            orb = new cv.ORB(1500);
+            orb = new cv.ORB(); // Removed 1500 limit for stability
             matcher = new cv.BFMatcher(cv.NORM_HAMMING, true);
             refKP = new cv.KeyPointVector();
             refDesc = new cv.Mat();
@@ -154,7 +156,7 @@
     function createNewTarget(name = null) {
         if (!name) name = prompt("Enter Target Name:", "New Target");
         if (!name) return;
-        const newTarget = { id: Date.now().toString(), name: name, scans: [] };
+        const newTarget = { id: Date.now().toString(), name: name, scans: [], baseline: null };
         targets.push(newTarget);
         saveToPhone();
         setActiveTarget(newTarget.id);
@@ -306,9 +308,14 @@
             cropSize = targetRadius * 2 + 60;
             let rx = Math.max(0, best.center.x - cropSize/2), ry = Math.max(0, best.center.y - cropSize/2);
             
-            // Core Center Tracking
             targetCenter = { x: best.center.x - rx, y: best.center.y - ry };
-            baselineScreenCenter = { x: best.center.x, y: best.center.y };
+            
+            // NEW: Save the baseline screen position to the target object permanently
+            const target = targets.find(t => t.id === activeTargetId);
+            if (target) {
+                target.baseline = { x: best.center.x, y: best.center.y };
+                saveToPhone();
+            }
             
             let roi = frame.roi(new cv.Rect(rx, ry, Math.min(frame.cols-rx, cropSize), Math.min(frame.rows-ry, cropSize)));
             
@@ -365,92 +372,142 @@
     }
 
     function processFrame() {
-        let frame = grab();
-        let grayLive = new cv.Mat(), liveKP = new cv.KeyPointVector(), liveDesc = new cv.Mat(), matches = new cv.DMatchVector();
-        
-        cv.cvtColor(frame, grayLive, cv.COLOR_RGBA2GRAY);
-        orb.detectAndCompute(grayLive, new cv.Mat(), liveKP, liveDesc);
-        
-        if(!liveDesc.empty()) {
-            matcher.match(refDesc, liveDesc, matches);
-            let good = [];
-            for(let i=0; i<matches.size(); i++) { 
-                if(matches.get(i).distance < 48) good.push(matches.get(i));
-            }
+        // SAFE MEMORY MANAGEMENT: Declare all Mats here so they can be deleted in finally
+        let frame = null, grayLive = null, liveKP = null, liveDesc = null, matches = null;
+        let matSrc = null, matDst = null, H = null, invH = null, warped = null;
+        let refBlurred = null, warpedBlurred = null, diff = null, thresh = null;
+        let kernel = null, liveMask = null, maskedThresh = null, contours = null, hier = null;
+
+        try {
+            frame = grab();
+            grayLive = new cv.Mat();
+            liveKP = new cv.KeyPointVector();
+            liveDesc = new cv.Mat();
+            matches = new cv.DMatchVector();
             
-            if(good.length > 10) {
-                let srcP = [], dstP = [];
-                for(let m of good) { 
-                    srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); 
-                    dstP.push(liveKP.get(m.trainIdx).pt.x, liveKP.get(m.trainIdx).pt.y); 
+            cv.cvtColor(frame, grayLive, cv.COLOR_RGBA2GRAY);
+            orb.detectAndCompute(grayLive, new cv.Mat(), liveKP, liveDesc);
+            
+            if(!liveDesc.empty()) {
+                matcher.match(refDesc, liveDesc, matches);
+                let good = [];
+                for(let i=0; i<matches.size(); i++) { 
+                    if(matches.get(i).distance < 48) good.push(matches.get(i));
                 }
                 
-                let matSrc = cv.matFromArray(good.length, 1, cv.CV_32FC2, srcP);
-                let matDst = cv.matFromArray(good.length, 1, cv.CV_32FC2, dstP);
-                let H = cv.findHomography(matSrc, matDst, cv.RANSAC, 5.0);
-                
-                if(!H.empty()) {
-                    let invH = new cv.Mat();
-                    cv.invert(H, invH, cv.DECOMP_LU);
+                if(good.length > 15) { // Increased to 15 for homography stability
+                    let srcP = [], dstP = [];
+                    for(let m of good) { 
+                        srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); 
+                        dstP.push(liveKP.get(m.trainIdx).pt.x, liveKP.get(m.trainIdx).pt.y); 
+                    }
                     
-                    let warped = new cv.Mat(); 
-                    cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
+                    matSrc = cv.matFromArray(good.length, 1, cv.CV_32FC2, srcP);
+                    matDst = cv.matFromArray(good.length, 1, cv.CV_32FC2, dstP);
+                    H = cv.findHomography(matSrc, matDst, cv.RANSAC, 5.0);
                     
-                    let diff = new cv.Mat(), thresh = new cv.Mat();
-                    cv.absdiff(refGray, warped, diff); 
-                    cv.threshold(diff, thresh, 50, 255, cv.THRESH_BINARY);
-                    
-                    let liveMask = cv.Mat.zeros(refGray.rows, refGray.cols, cv.CV_8UC1);
-                    cv.circle(liveMask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 15, new cv.Scalar(255), -1);
-                    
-                    let maskedThresh = new cv.Mat(); 
-                    thresh.copyTo(maskedThresh, liveMask);
+                    if(!H.empty()) {
+                        invH = new cv.Mat();
+                        cv.invert(H, invH, cv.DECOMP_LU);
+                        
+                        warped = new cv.Mat(); 
+                        cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
+                        
+                        // Noise Reduction: Blur images before comparison
+                        refBlurred = new cv.Mat();
+                        warpedBlurred = new cv.Mat();
+                        cv.GaussianBlur(refGray, refBlurred, new cv.Size(5, 5), 0);
+                        cv.GaussianBlur(warped, warpedBlurred, new cv.Size(5, 5), 0);
 
-                    let contours = new cv.MatVector(), hier = new cv.Mat();
-                    cv.findContours(maskedThresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                    
-                    for(let i=0; i<contours.size(); i++) {
-                        let cnt = contours.get(i), area = cv.contourArea(cnt);
-                        if(area > 15 && area < 600) {
-                            let M = cv.moments(cnt);
-                            let p = {x: M.m10/M.m00, y: M.m01/M.m00};
-                            if (Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y) > targetRadius - 15) continue;
+                        diff = new cv.Mat();
+                        thresh = new cv.Mat();
+                        cv.absdiff(refBlurred, warpedBlurred, diff); 
+                        cv.threshold(diff, thresh, 40, 255, cv.THRESH_BINARY); // Lowered threshold because of blur
+                        
+                        // Morphological Opening to kill dust/noise
+                        kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+                        cv.morphologyEx(thresh, thresh, cv.MORPH_OPEN, kernel);
+                        
+                        liveMask = cv.Mat.zeros(refGray.rows, refGray.cols, cv.CV_8UC1);
+                        cv.circle(liveMask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 15, new cv.Scalar(255), -1);
+                        
+                        maskedThresh = new cv.Mat(); 
+                        thresh.copyTo(maskedThresh, liveMask);
+
+                        contours = new cv.MatVector();
+                        hier = new cv.Mat();
+                        cv.findContours(maskedThresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                        
+                        for(let i=0; i<contours.size(); i++) {
+                            let cnt = contours.get(i), area = cv.contourArea(cnt);
                             
-                            let hull = new cv.Mat(); 
-                            cv.convexHull(cnt, hull);
-                            let solidity = area / (cv.contourArea(hull) || 1); 
-                            hull.delete();
-                            
-                            if(solidity > 0.80) {
-                                // Relative Center Logic Applied Here
-                                let finalX = p.x - targetCenter.x;
-                                let finalY = p.y - targetCenter.y;
+                            if(area > 20 && area < 600) { // Adjusted min area
+                                let M = cv.moments(cnt);
+                                let p = {x: M.m10/M.m00, y: M.m01/M.m00};
+                                if (Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y) > targetRadius - 15) continue;
                                 
-                                let c = candidates.find(can => Math.hypot(can.x - finalX, can.y - finalY) < PROXIMITY);
-                                if (c) { c.f++; } else { candidates.push({x: finalX, y: finalY, f: 1}); }
+                                let hull = new cv.Mat(); 
+                                cv.convexHull(cnt, hull);
+                                let solidity = area / (cv.contourArea(hull) || 1); 
+                                
+                                // Aspect Ratio Check for paper tears vs creases
+                                let rect = cv.boundingRect(cnt);
+                                let aspectRatio = rect.width / rect.height;
+                                let isRoundish = (aspectRatio >= 0.4 && aspectRatio <= 2.5);
+                                
+                                hull.delete(); // Delete locally scoped mat immediately
+                                
+                                if(solidity > 0.60 && isRoundish) {
+                                    let finalX = p.x - targetCenter.x;
+                                    let finalY = p.y - targetCenter.y;
+                                    
+                                    // EXCLUSION CHECK: Is this in the deadzone of a known hole?
+                                    const target = targets.find(t => t.id === activeTargetId);
+                                    let knownHoles = target && target.scans ? target.scans.flatMap(s => s.holes) : [];
+                                    let isOldHole = knownHoles.some(old => Math.hypot(old.x - finalX, old.y - finalY) < OLD_HOLE_TOLERANCE);
+                                    
+                                    if (isOldHole) continue; // Skip to next contour
+                                    
+                                    // Tracking new candidate
+                                    let c = candidates.find(can => Math.hypot(can.x - finalX, can.y - finalY) < PROXIMITY);
+                                    if (c) { c.f++; } else { candidates.push({x: finalX, y: finalY, f: 1}); }
+                                }
                             }
                         }
                     }
-                    invH.delete(); warped.delete(); diff.delete(); thresh.delete(); liveMask.delete(); maskedThresh.delete(); contours.delete(); hier.delete();
                 }
-                matSrc.delete(); matDst.delete(); H.delete();
             }
+        } finally {
+            // BULLETPROOF MEMORY CLEANUP
+            if (frame) frame.delete();
+            if (grayLive) grayLive.delete();
+            if (liveKP) liveKP.delete();
+            if (liveDesc) liveDesc.delete();
+            if (matches) matches.delete();
+            if (matSrc) matSrc.delete();
+            if (matDst) matDst.delete();
+            if (H) H.delete();
+            if (invH) invH.delete();
+            if (warped) warped.delete();
+            if (refBlurred) refBlurred.delete();
+            if (warpedBlurred) warpedBlurred.delete();
+            if (diff) diff.delete();
+            if (thresh) thresh.delete();
+            if (kernel) kernel.delete();
+            if (liveMask) liveMask.delete();
+            if (maskedThresh) maskedThresh.delete();
+            if (contours) contours.delete();
+            if (hier) hier.delete();
         }
-        frame.delete(); grayLive.delete(); liveKP.delete(); liveDesc.delete(); matches.delete();
     }
 
     function endScan() {
         isScanning = false;
         const target = targets.find(t => t.id === activeTargetId);
         
-        let knownHoles = target.scans.flatMap(s => s.holes);
+        // Since old holes were filtered during the scan loop, we only need to check frame count
         let confirmedHoles = candidates.filter(c => c.f >= REQ_FRAMES);
-        let newValidHoles = [];
-
-        for(let h of confirmedHoles) {
-            let isOld = knownHoles.some(old => Math.hypot(old.x - h.x, old.y - h.y) < PROXIMITY);
-            if(!isOld) { newValidHoles.push({x: h.x, y: h.y}); }
-        }
+        let newValidHoles = confirmedHoles.map(h => ({x: h.x, y: h.y}));
 
         if (newValidHoles.length > 0) {
             target.scans.push({ id: Date.now().toString(), name: `Scan ${target.scans.length + 1}`, holes: newValidHoles });
@@ -479,9 +536,9 @@
         if (!target || !target.scans) return;
         let totalScans = target.scans.length;
 
-        // Add back the screen center
-        let cx = baselineScreenCenter.x || procW / 2;
-        let cy = baselineScreenCenter.y || procH / 2;
+        // NEW: Load saved center, preventing tracking drift on page reload
+        let cx = (target.baseline && target.baseline.x) ? target.baseline.x : procW / 2;
+        let cy = (target.baseline && target.baseline.y) ? target.baseline.y : procH / 2;
 
         target.scans.forEach((scan, index) => {
             let isLastScan = (index === totalScans - 1);
@@ -489,17 +546,27 @@
                 let drawX = h.x + cx;
                 let drawY = h.y + cy;
 
+                // High Contrast Outline
+                ctx.beginPath();
+                ctx.arc(drawX, drawY, 9, 0, 6.28); 
+                ctx.lineWidth = 5;
+                ctx.strokeStyle = "rgba(0,0,0,0.8)";
+                ctx.stroke();
+
                 ctx.beginPath();
                 ctx.arc(drawX, drawY, 8, 0, 6.28); 
-                ctx.lineWidth = 3;
+                ctx.lineWidth = 2;
                 if (isLastScan) {
-                    ctx.strokeStyle="rgba(0,255,0,0.9)"; 
+                    ctx.strokeStyle = "#00ff00"; 
                     ctx.stroke();
+                    ctx.beginPath();
                     ctx.moveTo(drawX - 12, drawY); ctx.lineTo(drawX + 12, drawY);
                     ctx.moveTo(drawX, drawY - 12); ctx.lineTo(drawX, drawY + 12);
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = "#00ff00";
                     ctx.stroke();
                 } else {
-                    ctx.strokeStyle="rgba(255,0,0,0.8)"; 
+                    ctx.strokeStyle = "#ff3b30"; 
                     ctx.stroke();
                 }
             });
