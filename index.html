@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Smart Target - 3s Temporal Engine (v2)</title>
+    <title>Smart Target - 3s Temporal Engine (v3)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
     
@@ -37,7 +37,6 @@
         
         #status { color: #ffaa00; font-size: 14px; font-weight: bold; text-align: right; }
         
-        /* Debug Console */
         #debugLog { position: absolute; bottom: 0; left: 0; width: 100%; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.8); color: #ff4444; font-family: monospace; font-size: 12px; z-index: 9999; padding: 10px; display: none; box-sizing: border-box;}
     </style>
 </head>
@@ -63,6 +62,9 @@
             <div style="display:flex; gap:10px;">
                 <button id="btnSwitchCam" onclick="switchCamera()" style="display:none; background: #6c757d; color: white;">🔄 Switch Lens</button>
                 <button id="btnBaseline" onclick="setBaseline()" disabled>📸 Set Baseline</button>
+                
+                <button id="btnUnfreeze" onclick="unfreezeCamera()" style="display:none; background: #ffaa00; color: black;">▶️ Resume Live</button>
+                
                 <button id="btnNewShot" class="btn-green" onclick="startFullScan()" disabled>🔴 Scan (3s)</button>
             </div>
         </div>
@@ -77,7 +79,7 @@
     <div id="debugLog"></div>
 
 <script>
-    // 1. BULLETPROOF ERROR CATCHER
+    // 1. ERROR CATCHER
     function logError(msg) {
         let debugDiv = document.getElementById('debugLog');
         debugDiv.style.display = 'block';
@@ -104,10 +106,9 @@
     let orb = null, matcher = null, refKP = null, refDesc = null, refGray = null;
     let cropSize = 0, targetRadius = 0, targetCenter = { x: 0, y: 0 };
     
-    // UPDATED TUNING PARAMETERS
-    const OLD_HOLE_TOLERANCE = 25.0; // Deadzone around old holes
-    const PROXIMITY = 22.0;          // Tolerance for tracking a new hole
-    const REQ_FRAMES = 6;            // Frames required to confirm a hit
+    const OLD_HOLE_TOLERANCE = 25.0; 
+    const PROXIMITY = 22.0;          
+    const REQ_FRAMES = 6;            
     
     let candidates = [];
     let isScanning = false;
@@ -116,7 +117,7 @@
     let videoDevices = [];
     let currentDeviceIndex = 0;
 
-    // 3. OPENCV INITIALIZATION HOOK
+    // 3. OPENCV INITIALIZATION
     var Module = { 
         onRuntimeInitialized: function() { 
             setTimeout(initApp, 500); 
@@ -129,7 +130,7 @@
             document.getElementById('status').innerText = "Loading Saved Data...";
             document.getElementById('status').style.color = "#ffaa00";
 
-            orb = new cv.ORB(); // Removed 1500 limit for stability
+            orb = new cv.ORB(); 
             matcher = new cv.BFMatcher(cv.NORM_HAMMING, true);
             refKP = new cv.KeyPointVector();
             refDesc = new cv.Mat();
@@ -310,7 +311,6 @@
             
             targetCenter = { x: best.center.x - rx, y: best.center.y - ry };
             
-            // NEW: Save the baseline screen position to the target object permanently
             const target = targets.find(t => t.id === activeTargetId);
             if (target) {
                 target.baseline = { x: best.center.x, y: best.center.y };
@@ -372,7 +372,6 @@
     }
 
     function processFrame() {
-        // SAFE MEMORY MANAGEMENT: Declare all Mats here so they can be deleted in finally
         let frame = null, grayLive = null, liveKP = null, liveDesc = null, matches = null;
         let matSrc = null, matDst = null, H = null, invH = null, warped = null;
         let refBlurred = null, warpedBlurred = null, diff = null, thresh = null;
@@ -395,7 +394,7 @@
                     if(matches.get(i).distance < 48) good.push(matches.get(i));
                 }
                 
-                if(good.length > 15) { // Increased to 15 for homography stability
+                if(good.length > 15) { 
                     let srcP = [], dstP = [];
                     for(let m of good) { 
                         srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); 
@@ -413,7 +412,6 @@
                         warped = new cv.Mat(); 
                         cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
                         
-                        // Noise Reduction: Blur images before comparison
                         refBlurred = new cv.Mat();
                         warpedBlurred = new cv.Mat();
                         cv.GaussianBlur(refGray, refBlurred, new cv.Size(5, 5), 0);
@@ -422,9 +420,8 @@
                         diff = new cv.Mat();
                         thresh = new cv.Mat();
                         cv.absdiff(refBlurred, warpedBlurred, diff); 
-                        cv.threshold(diff, thresh, 40, 255, cv.THRESH_BINARY); // Lowered threshold because of blur
+                        cv.threshold(diff, thresh, 40, 255, cv.THRESH_BINARY); 
                         
-                        // Morphological Opening to kill dust/noise
                         kernel = cv.Mat.ones(3, 3, cv.CV_8U);
                         cv.morphologyEx(thresh, thresh, cv.MORPH_OPEN, kernel);
                         
@@ -441,34 +438,30 @@
                         for(let i=0; i<contours.size(); i++) {
                             let cnt = contours.get(i), area = cv.contourArea(cnt);
                             
-                            if(area > 20 && area < 600) { // Adjusted min area
-                                let M = cv.moments(cnt);
-                                let p = {x: M.m10/M.m00, y: M.m01/M.m00};
-                                if (Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y) > targetRadius - 15) continue;
+                            // STRICT AREA CAP: Kills giant black bullseye circles automatically
+                            if(area > 30 && area < 400) { 
+                                let perimeter = cv.arcLength(cnt, true);
+                                // CIRCULARITY MATH: Ignores text, fonts, and long creases
+                                let circularity = (4 * Math.PI * area) / (perimeter * perimeter);
                                 
-                                let hull = new cv.Mat(); 
-                                cv.convexHull(cnt, hull);
-                                let solidity = area / (cv.contourArea(hull) || 1); 
-                                
-                                // Aspect Ratio Check for paper tears vs creases
                                 let rect = cv.boundingRect(cnt);
                                 let aspectRatio = rect.width / rect.height;
-                                let isRoundish = (aspectRatio >= 0.4 && aspectRatio <= 2.5);
+                                let isRoundish = (aspectRatio >= 0.5 && aspectRatio <= 2.0);
                                 
-                                hull.delete(); // Delete locally scoped mat immediately
-                                
-                                if(solidity > 0.60 && isRoundish) {
+                                if(circularity > 0.45 && isRoundish) {
+                                    let M = cv.moments(cnt);
+                                    let p = {x: M.m10/M.m00, y: M.m01/M.m00};
+                                    if (Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y) > targetRadius - 15) continue;
+                                    
                                     let finalX = p.x - targetCenter.x;
                                     let finalY = p.y - targetCenter.y;
                                     
-                                    // EXCLUSION CHECK: Is this in the deadzone of a known hole?
                                     const target = targets.find(t => t.id === activeTargetId);
                                     let knownHoles = target && target.scans ? target.scans.flatMap(s => s.holes) : [];
                                     let isOldHole = knownHoles.some(old => Math.hypot(old.x - finalX, old.y - finalY) < OLD_HOLE_TOLERANCE);
                                     
-                                    if (isOldHole) continue; // Skip to next contour
+                                    if (isOldHole) continue; 
                                     
-                                    // Tracking new candidate
                                     let c = candidates.find(can => Math.hypot(can.x - finalX, can.y - finalY) < PROXIMITY);
                                     if (c) { c.f++; } else { candidates.push({x: finalX, y: finalY, f: 1}); }
                                 }
@@ -478,7 +471,6 @@
                 }
             }
         } finally {
-            // BULLETPROOF MEMORY CLEANUP
             if (frame) frame.delete();
             if (grayLive) grayLive.delete();
             if (liveKP) liveKP.delete();
@@ -505,7 +497,6 @@
         isScanning = false;
         const target = targets.find(t => t.id === activeTargetId);
         
-        // Since old holes were filtered during the scan loop, we only need to check frame count
         let confirmedHoles = candidates.filter(c => c.f >= REQ_FRAMES);
         let newValidHoles = confirmedHoles.map(h => ({x: h.x, y: h.y}));
 
@@ -521,11 +512,29 @@
         btn.innerText = "🔴 Scan (3s)";
         btn.style.background = ""; 
         btn.classList.add("btn-green");
-        btn.disabled = false;
+        
+        // --- NEW UI FUNCTIONALITY: FREEZE AND INSPECT ---
+        document.getElementById('webcam').pause(); 
+        
+        btn.style.display = "none"; 
+        document.getElementById('btnBaseline').disabled = true; 
+        document.getElementById('btnUnfreeze').style.display = "block"; 
+        
+        document.getElementById('status').innerText = `Scan Frozen. ${newValidHoles.length} New Shots.`;
+        document.getElementById('status').style.color = "#00ff00";
+    }
+
+    // --- NEW FUNCTION: UNFREEZE CAMERA ---
+    function unfreezeCamera() {
+        document.getElementById('webcam').play(); 
+        
+        document.getElementById('btnUnfreeze').style.display = "none";
+        document.getElementById('btnNewShot').style.display = "block";
+        document.getElementById('btnNewShot').disabled = false;
         document.getElementById('btnBaseline').disabled = false;
         
-        document.getElementById('status').innerText = `Done. ${newValidHoles.length} New Shots.`;
-        document.getElementById('status').style.color = "#00ff00";
+        document.getElementById('status').innerText = "Live. Ready to Scan.";
+        document.getElementById('status').style.color = "#00aaff";
     }
 
     function drawTargetState(target) {
@@ -536,7 +545,6 @@
         if (!target || !target.scans) return;
         let totalScans = target.scans.length;
 
-        // NEW: Load saved center, preventing tracking drift on page reload
         let cx = (target.baseline && target.baseline.x) ? target.baseline.x : procW / 2;
         let cy = (target.baseline && target.baseline.y) ? target.baseline.y : procH / 2;
 
@@ -546,7 +554,6 @@
                 let drawX = h.x + cx;
                 let drawY = h.y + cy;
 
-                // High Contrast Outline
                 ctx.beginPath();
                 ctx.arc(drawX, drawY, 9, 0, 6.28); 
                 ctx.lineWidth = 5;
