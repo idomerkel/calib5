@@ -3,243 +3,190 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Smart Target - 3s Temporal Engine (v3)</title>
+    <title>Smart Target - 3x3 Deduction Engine</title>
     
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+
+    <script>
+        var Module = { 
+            onRuntimeInitialized: function() { 
+                document.getElementById('status').innerText = "System Ready."; 
+                document.getElementById('status').style.color = "#00ff00"; 
+            } 
+        };
+    </script>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onerror="document.getElementById('status').innerText='Error loading OpenCV';"></script>
     
     <style>
-        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: #121212; color: white; margin: 0; display: flex; height: 100dvh; overflow: hidden; }
+        body { font-family: 'Segoe UI', sans-serif; background-color: #0a0a0a; color: white; margin: 0; display: flex; height: 100vh; overflow: hidden; touch-action: none; }
+        .main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 10px; overflow-y: auto; }
         
-        .sidebar { width: 260px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 10px; box-sizing: border-box; z-index: 100; }
-        .section-title { margin: 0 0 10px 0; font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        /* OVERLAY FIX: Centered and contained to prevent stretching skew */
+        .video-box { position: relative; width: 100%; max-width: 640px; height: 48vh; min-height: 300px; border: 3px solid #444; border-radius: 12px; overflow: hidden; background: #000; flex-shrink: 0; display: flex; justify-content: center; align-items: center;}
+        video, canvas.overlay { position: absolute; width: 100%; height: 100%; top: 0; left: 0; object-fit: contain; }
+        canvas.overlay { pointer-events: none; z-index: 10; }
         
-        .target-list, .scan-list { flex: 1; overflow-y: auto; margin-bottom: 15px; }
-        .scan-list { border-top: 2px dashed #333; padding-top: 10px; }
+        /* ROTATING WHEEL UI */
+        .playback-controls { width: 100%; display: flex; flex-direction: column; align-items: center; margin-top: 15px; display: none; }
+        .wheel-container { 
+            width: 180px; height: 180px; border-radius: 50%; 
+            background: conic-gradient(from 0deg, #1a1a1a, #333, #1a1a1a);
+            position: relative; cursor: grab; 
+            border: 4px solid #555; box-shadow: 0 4px 15px rgba(0,0,0,0.8); 
+            touch-action: none; display: flex; justify-content: center; align-items: center;
+        }
+        .wheel-spinner { 
+            width: 100%; height: 100%; position: absolute; border-radius: 50%; pointer-events: none; 
+            background: repeating-conic-gradient(from 0deg, transparent 0deg 10deg, rgba(255,255,255,0.05) 10deg 20deg);
+        }
+        .wheel-indicator { position: absolute; top: 0; left: 50%; width: 8px; height: 20px; background: #00aaff; transform: translateX(-50%); border-radius: 4px; box-shadow: 0 0 8px #00aaff;}
+        .wheel-center-btn { 
+            position: absolute; width: 60px; height: 60px; border-radius: 50%; 
+            background: #007bff; border: 3px solid #0056b3; color: white; 
+            font-size: 20px; font-weight: bold; cursor: pointer; z-index: 10; 
+            display: flex; justify-content: center; align-items: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        .playback-info { font-family: monospace; font-size: 16px; font-weight: bold; color: #00aaff; margin-top: 5px; }
+
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; font-size: 13px; cursor: pointer; border-radius: 6px; font-weight: bold; margin: 5px; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        #btnRecord.recording { background: #ff3b30; animation: pulse 1.5s infinite; }
+        #status { font-weight: bold; font-size: 13px; color: #ffaa00; margin-bottom: 5px; text-transform: uppercase; }
         
-        .list-btn { background: #2a2a2a; color: white; border: 1px solid #444; padding: 10px; margin-bottom: 5px; border-radius: 6px; cursor: pointer; text-align: left; display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
-        .list-btn.active { background: #0056b3; border-color: #00aaff; }
-        .list-btn:hover { background: #333; }
+        /* 3-COLUMN SIDEBAR UI */
+        .dashboard { display: flex; width: 550px; flex-direction: column; background: #161616; padding: 10px; overflow-y: auto; border-left: 2px solid #333; }
+        .model-container { width: 100%; height: 180px; background: #000; border: 1px solid #444; border-radius: 6px; margin-bottom: 10px; position: relative; flex-shrink: 0; display: flex; justify-content: center; align-items: center;}
+        .graph-container { width: 100%; height: 80px; background: #000; border: 1px solid #444; border-radius: 6px; margin-bottom: 10px; position: relative; flex-shrink: 0; }
+        .graph-label { position: absolute; top: 5px; left: 5px; font-size: 9px; color: #888; z-index: 20; background: rgba(0,0,0,0.6); padding: 2px 4px; border-radius: 3px;}
         
-        .scan-item { background: #222; border: 1px solid #444; border-left: 3px solid #00aaff; padding: 8px; margin-bottom: 5px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+        .split-view { display: flex; gap: 8px; flex: 1; overflow-y: hidden;}
+        .feed-col { display: flex; flex-direction: column; overflow-y: auto; }
+        .feed-col h3 { font-size: 10px; color: #aaa; margin: 0 0 5px 0; border-bottom: 1px solid #333; padding-bottom: 3px; text-align: center; }
         
-        .delete-btn { color: #ff4444; cursor: pointer; font-weight: bold; padding: 5px; background: rgba(255, 68, 68, 0.1); border-radius: 4px; font-size: 12px; }
+        /* Data Cards */
+        .card { background: #222; border-radius: 6px; padding: 8px; border-left: 3px solid #444; margin-bottom: 8px; display: none; }
+        .result-card.visible { display: block; animation: fadeIn 0.2s ease; }
+        .card h4 { margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; }
+        .mistake { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding: 4px 0; font-size: 10px; align-items: center;}
+        .mistake:last-child { border-bottom: none; }
+        .tag { font-size: 8px; font-weight: bold; border-radius: 3px; padding: 2px 4px; display: inline-block;}
         
-        .main { flex: 1; display: flex; flex-direction: column; padding: 10px; box-sizing: border-box; position: relative; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; z-index: 100; }
-        
-        .viewer { flex: 1; position: relative; background: #000; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; align-items: center; }
-        #webcam { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-        #displayCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; z-index: 10; }
-        
-        button { background: #00aaff; color: black; border: none; padding: 10px 15px; font-size: 14px; cursor: pointer; border-radius: 6px; font-weight: bold; }
-        button:disabled { background: #444 !important; color: #888 !important; cursor: not-allowed; }
-        .btn-green { background: #28a745; color: white; }
-        
-        #status { color: #ffaa00; font-size: 14px; font-weight: bold; text-align: right; }
-        
-        #debugLog { position: absolute; bottom: 0; left: 0; width: 100%; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.8); color: #ff4444; font-family: monospace; font-size: 12px; z-index: 9999; padding: 10px; display: none; box-sizing: border-box;}
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
 
-    <div class="sidebar">
-        <h2 class="section-title">🎯 Target Directories</h2>
-        <button onclick="createNewTarget()" style="margin-bottom: 10px; padding: 8px;">➕ New Target</button>
-        <div class="target-list" id="targetList"></div>
-        
-        <h2 class="section-title" id="scanTitle">📂 Scan History</h2>
-        <div class="scan-list" id="scanList"></div>
-
-        <button id="btnCam" onclick="startCamera()" style="margin-top: auto; background: #ffaa00;">📸 Start Camera</button>
-    </div>
-
     <div class="main">
-        <div class="header">
-            <div>
-                <h2 id="currentTargetName" style="margin: 0; font-size: 20px;">Loading...</h2>
-                <span id="status">Waiting for System...</span>
+        <h2 style="margin:0 0 5px 0; font-size: 16px;">Diagnostic Engine</h2>
+        <p id="status">LOADING WASM...</p>
+        <div class="video-box" id="vbox">
+            <video id="webcam" autoplay playsinline muted></video>
+            <canvas id="overlayCanvas" class="overlay"></canvas>
+        </div>
+        
+        <div class="playback-controls" id="playbackControls">
+            <div class="wheel-container" id="scrubWheel">
+                <div class="wheel-spinner" id="wheelSpinner"><div class="wheel-indicator"></div></div>
+                <div class="wheel-center-btn" id="btnPlayPause">▶</div>
             </div>
-            <div style="display:flex; gap:10px;">
-                <button id="btnSwitchCam" onclick="switchCamera()" style="display:none; background: #6c757d; color: white;">🔄 Switch Lens</button>
-                <button id="btnBaseline" onclick="setBaseline()" disabled>📸 Set Baseline</button>
-                
-                <button id="btnUnfreeze" onclick="unfreezeCamera()" style="display:none; background: #ffaa00; color: black;">▶️ Resume Live</button>
-                
-                <button id="btnNewShot" class="btn-green" onclick="startFullScan()" disabled>🔴 Scan (3s)</button>
-            </div>
+            <div class="playback-info" id="timeLabel">0.00s</div>
         </div>
 
-        <div class="viewer">
-            <video id="webcam" autoplay playsinline muted></video>
-            <canvas id="displayCanvas"></canvas>
-            <canvas id="calcCanvas" style="display:none;"></canvas>
+        <div style="margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: center;">
+            <button id="btnCam" onclick="startCamera()">1. Start Camera</button>
+            <button id="btnCalibrate" onclick="startCalibration()" disabled style="background:#8a2be2;">2. Calibrate</button>
+            <button id="btnBase" onclick="setBaseline()" disabled>3. Lock Target</button>
+            <button id="btnRecord" onclick="toggleRecording()" disabled style="background:#28a745;">4. Record Session</button>
         </div>
     </div>
 
-    <div id="debugLog"></div>
+    <div class="dashboard">
+        <div class="model-container">
+            <span class="graph-label">3D Telemetry Replay</span>
+            <model-viewer id="weaponViewer" 
+                rotation="0deg 180deg 0deg"
+                interaction-prompt="none"
+                shadow-intensity="1" 
+                camera-controls 
+                style="width: 100%; height: 100%;">
+                <div style="color: #666; font-size: 12px; text-align: center; margin-top: 80px;">3D Model Viewport</div>
+            </model-viewer>
+        </div>
+
+        <div class="graph-container">
+            <span class="graph-label">Gyro Telemetry</span>
+            <canvas id="gyroGraph" width="530" height="80" style="position: absolute; top:0; left:0;"></canvas>
+            <div id="graphPlayhead" style="position:absolute; top:0; left:0; width:2px; height:80px; background:#fff; display:none; box-shadow: 0 0 5px #fff;"></div>
+        </div>
+        
+        <div class="split-view">
+            <div class="feed-col" style="flex: 1;">
+                <h3>1. VISUAL TRACKING</h3>
+                <div id="shotList"></div>
+            </div>
+            <div class="feed-col" style="flex: 1;">
+                <h3>2. KINEMATICS</h3>
+                <div id="kinematicList"></div>
+            </div>
+            <div class="feed-col" style="flex: 1.3;">
+                <h3>3. TOP 3 DEDUCTIONS</h3>
+                <div id="deductionList"></div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="calcCanvas" width="640" height="480" style="display:none;"></canvas>
 
 <script>
-    // 1. ERROR CATCHER
-    function logError(msg) {
-        let debugDiv = document.getElementById('debugLog');
-        debugDiv.style.display = 'block';
-        debugDiv.innerHTML += `<div>[ERR] ${msg}</div>`;
-        document.getElementById('status').innerText = "SYSTEM ERROR";
-        document.getElementById('status').style.color = "#ff4444";
-    }
-    
-    window.onerror = function(message, source, lineno, colno, error) {
-        logError(`${message} at line ${lineno}`);
-        return true; 
-    };
-    window.addEventListener('unhandledrejection', function(event) {
-        logError(`Promise rejected: ${event.reason}`);
-    });
+    let isRecording = false, isAnalyzing = false;
+    let stream, mediaRecorder, recordedChunks = [], sensorLog = [], recordingStartTime = 0;
+    let telemetrySpikes = []; 
+    let currentTilt = { pitch: 0, roll: 0, yaw: 0 };
 
-    // 2. STATE VARIABLES
-    let cvReady = false;
-    let stream = null;
-    let targets = []; 
-    let activeTargetId = null;
-    
-    let procW = 640, procH = 480;
     let orb = null, matcher = null, refKP = null, refDesc = null, refGray = null;
-    let cropSize = 0, targetRadius = 0, targetCenter = { x: 0, y: 0 };
+    let procW = 640, procH = 480;
+    let cropSize = 0, targetRadius = 0, persistentShots = [], candidates = [], blacklist = [];
+    let targetCenter = { x: 0, y: 0 }; 
+    const PROXIMITY = 22.0, REQ_FRAMES = 4, OLD_HOLE_TOLERANCE = 25.0; 
+
+    // Dynamic Sensor Thresholds
+    let GYRO_SHOT_THRESHOLD = 80;   
+    const ACCEL_SHOT_THRESHOLD = 15;  
+    const GYRO_MOVE_THRESH = 10.0;    
+    const ACCEL_MOVE_THRESH = 1.5;    
+    let isCalibrating = false;
+    let calibSpikes = [];
     
-    // UPGRADED RECOGNITION TUNING PARAMETERS
-    const OLD_HOLE_TOLERANCE = 25.0; 
-    const PROXIMITY = 22.0;          
-    const REQ_FRAMES = 6;            
-    
-    let candidates = [];
-    let isScanning = false;
-    let scanStartTime = 0;
+    // COMPREHENSIVE MISTAKE DATABASE
+    const mistakeDB = [
+        { name: "Jerking the trigger", tele: ["Down", "Pitch", "Left"], vis: ["Low", "Left"] },
+        { name: "Anticipating Recoil", tele: ["Down", "Pitch"], vis: ["Low"] },
+        { name: "Heeling", tele: ["Up", "Pitch"], vis: ["High"] },
+        { name: "Too much trigger finger", tele: ["Right", "Yaw"], vis: ["Right"] },
+        { name: "Too little trigger finger", tele: ["Left", "Yaw"], vis: ["Left"] },
+        { name: "Thumb Pressure", tele: ["Right", "Roll"], vis: ["Right"] },
+        { name: "Breaking wrist up", tele: ["Up", "Pitch"], vis: ["High"] },
+        { name: "Breaking wrist down", tele: ["Down", "Pitch"], vis: ["Low"] },
+        { name: "Milking the grip", tele: ["Down", "Roll", "Left"], vis: ["Low", "Left"] },
+        { name: "Riding the recoil", tele: ["Up", "Pitch"], vis: ["High"] },
+        { name: "Breathing offset", tele: ["Up", "Down"], vis: ["High", "Low"] },
+        { name: "Grip Tension", tele: ["Left", "Right", "Roll"], vis: ["Left", "Right"] }
+    ];
 
-    let videoDevices = [];
-    let currentDeviceIndex = 0;
-
-    // 3. OPENCV INITIALIZATION
-    var Module = { 
-        onRuntimeInitialized: function() { 
-            setTimeout(initApp, 500); 
-        } 
-    };
-
-    // 4. MAIN APP LOGIC
-    async function initApp() {
-        try {
-            document.getElementById('status').innerText = "Loading Saved Data...";
-            document.getElementById('status').style.color = "#ffaa00";
-
-            orb = new cv.ORB(); 
-            matcher = new cv.BFMatcher(cv.NORM_HAMMING, true);
-            refKP = new cv.KeyPointVector();
-            refDesc = new cv.Mat();
-            cvReady = true;
-            
-            const savedData = await localforage.getItem('smart_targets_db');
-            if (savedData && Array.isArray(savedData) && savedData.length > 0) {
-                targets = savedData;
-                setActiveTarget(targets[0].id);
-            } else {
-                createNewTarget("Session 1");
-            }
-            document.getElementById('status').innerText = "System Ready. Start Camera.";
-            document.getElementById('status').style.color = "#00ff00";
-        } catch(e) {
-            logError("Init Error: " + e.message);
-        }
+    // FORCE PREVENT 3D LOOPING
+    const viewer = document.getElementById('weaponViewer');
+    if (viewer) {
+        viewer.autoplay = false;
+        viewer.loop = false;
+        viewer.addEventListener('loop', () => { viewer.pause(); });
+        viewer.addEventListener('finished', () => { viewer.pause(); });
     }
 
-    function saveToPhone() {
-        localforage.setItem('smart_targets_db', targets).catch(e => logError("Save Failed: " + e.message));
-    }
-
-    function createNewTarget(name = null) {
-        if (!name) name = prompt("Enter Target Name:", "New Target");
-        if (!name) return;
-        const newTarget = { id: Date.now().toString(), name: name, scans: [], baseline: null };
-        targets.push(newTarget);
-        saveToPhone();
-        setActiveTarget(newTarget.id);
-    }
-
-    function deleteTarget(id) {
-        if(confirm("Delete this entire target directory?")) {
-            targets = targets.filter(t => t.id !== id);
-            saveToPhone();
-            if(activeTargetId === id) setActiveTarget(targets.length > 0 ? targets[0].id : null);
-            else renderTargetList();
-        }
-    }
-
-    function setActiveTarget(id) {
-        activeTargetId = id;
-        renderTargetList();
-        const target = targets.find(t => t.id === id);
-        if (target) {
-            document.getElementById('currentTargetName').innerText = target.name;
-            renderScansList();
-            drawTargetState(target);
-            
-            if(refGray) { refGray.delete(); refGray = null; }
-            document.getElementById('btnNewShot').disabled = true;
-        }
-    }
-
-    function renderTargetList() {
-        const list = document.getElementById('targetList');
-        list.innerHTML = "";
-        targets.forEach(t => {
-            const isActive = t.id === activeTargetId ? 'active' : '';
-            list.innerHTML += `<div class="list-btn ${isActive}" onclick="setActiveTarget('${t.id}')"><span>📁 ${t.name}</span><span class="delete-btn" onclick="event.stopPropagation(); deleteTarget('${t.id}')">✖</span></div>`;
-        });
-    }
-
-    function renderScansList() {
-        const list = document.getElementById('scanList');
-        const target = targets.find(t => t.id === activeTargetId);
-        list.innerHTML = "";
-        if (!target || !target.scans || target.scans.length === 0) {
-            list.innerHTML = "<div style='color:#666; font-size:12px; text-align:center;'>No scans logged yet.</div>";
-            return;
-        }
-        [...target.scans].reverse().forEach((scan, index) => {
-            list.innerHTML += `<div class="scan-item"><span>⏱️ ${scan.name} <span style="color:#888;">(${scan.holes.length} shots)</span></span><span class="delete-btn" onclick="deleteScan('${scan.id}')">Delete</span></div>`;
-        });
-    }
-
-    function deleteScan(scanId) {
-        const target = targets.find(t => t.id === activeTargetId);
-        if (!target) return;
-        if (confirm("Delete this scan and its holes?")) {
-            target.scans = target.scans.filter(s => s.id !== scanId);
-            target.scans.forEach((s, i) => s.name = `Scan ${i + 1}`);
-            saveToPhone();
-            renderScansList();
-            drawTargetState(target);
-        }
-    }
-
-    // --- CAMERA ENGINE ---
-    async function startCamera(deviceId = null) {
-        document.getElementById('status').innerText = "Requesting Camera...";
-        
-        try {
-            if (!deviceId && videoDevices.length === 0) {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                let devices = await navigator.mediaDevices.enumerateDevices();
-                videoDevices = devices.filter(d => d.kind === 'videoinput');
-            } else {
-                let constraints = { video: { deviceId: { exact: deviceId } } };
-                if (stream) { stream.getTracks().forEach(t => t.stop()); }
-                stream = await navigator.mediaDevices.getUserMedia(constraints);
-            }
-
-            if (videoDevices.length > 1) {
-                document.getElementById('btnSwitchCam').style.display = 'block';
-            }
-
+    function startCamera() {
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } } })
+        .then(s => { 
+            stream = s;
             const videoEl = document.getElementById('webcam');
             videoEl.srcObject = stream; 
             
@@ -248,351 +195,569 @@
                 procW = Math.round(videoEl.videoWidth * scale);
                 procH = Math.round(videoEl.videoHeight * scale);
                 
-                document.getElementById('displayCanvas').width = procW;
-                document.getElementById('displayCanvas').height = procH;
+                // OVERLAY FIX: Link overlay canvas directly to computed video bounds
+                document.getElementById('overlayCanvas').width = procW;
+                document.getElementById('overlayCanvas').height = procH;
                 document.getElementById('calcCanvas').width = procW;
                 document.getElementById('calcCanvas').height = procH;
                 
-                videoEl.play();
-                document.getElementById('btnBaseline').disabled = false; 
-                document.getElementById('btnCam').style.display = 'none';
-                document.getElementById('status').innerText = "Center Target & Lock"; 
-                document.getElementById('status').style.color = "#00aaff";
+                videoEl.play().then(() => {
+                    document.getElementById('btnCalibrate').disabled = false;
+                    document.getElementById('btnBase').disabled = false; 
+                    document.getElementById('btnCam').style.display = 'none';
+                    document.getElementById('status').innerText = "Camera Active. Lock target.";
+                });
             };
-        } catch(err) {
-            logError("Camera Blocked: " + err.message);
+
+            window.addEventListener('deviceorientation', (e) => {
+                currentTilt.pitch = e.beta || 0; currentTilt.roll = e.gamma || 0; currentTilt.yaw = e.alpha || 0;
+            });
+            window.addEventListener('devicemotion', handleMotion); 
+        }).catch(e => {
+            document.getElementById('status').innerText = "Camera Error: " + e.message;
+        });
+    }
+
+    function handleMotion(event) {
+        let ax = event.accelerationIncludingGravity?.x || 0;
+        let ay = event.accelerationIncludingGravity?.y || 0;
+        let az = event.accelerationIncludingGravity?.z || 0;
+        let gx = event.rotationRate?.alpha || 0; 
+        let gy = event.rotationRate?.beta || 0;  
+        let gz = event.rotationRate?.gamma || 0; 
+
+        if (viewer && !isAnalyzing) {
+            viewer.orientation = `${currentTilt.pitch}deg ${currentTilt.yaw}deg ${currentTilt.roll}deg`;
         }
+
+        if (isCalibrating) {
+            let maxG = Math.max(Math.abs(gx), Math.abs(gy));
+            if (maxG > 20) calibSpikes.push(maxG);
+            return;
+        }
+
+        if (isRecording && (Math.abs(gx) > GYRO_SHOT_THRESHOLD || Math.abs(gy) > GYRO_SHOT_THRESHOLD)) {
+            let now = performance.now();
+            if (viewer && (!viewer.lastSpike || now - viewer.lastSpike > 500)) {
+                viewer.lastSpike = now; viewer.currentTime = 0; viewer.play(); 
+            }
+        }
+
+        if (!isRecording) return; 
+
+        sensorLog.push({
+            time_ms: performance.now() - recordingStartTime,
+            ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz,
+            tp: currentTilt.pitch, tr: currentTilt.roll, ty: currentTilt.yaw
+        });
     }
 
-    function switchCamera() {
-        if (isScanning || videoDevices.length <= 1) return;
-        currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+    function startCalibration() {
+        if(!confirm("Dry-Fire Calibration:\n1. Aim safely.\n2. Click OK.\n3. Pull the trigger (dry-fire) 3 times.\n\nThe app will learn your gun's specific vibration profile.")) return;
         
-        if(refGray) { refGray.delete(); refGray = null; }
-        document.getElementById('btnNewShot').disabled = true;
-        
-        startCamera(videoDevices[currentDeviceIndex].deviceId);
+        isCalibrating = true;
+        calibSpikes = [];
+        document.getElementById('status').innerText = "DRY FIRE 3 TIMES NOW...";
+        document.getElementById('status').style.color = "#8a2be2";
+
+        setTimeout(() => {
+            isCalibrating = false;
+            if (calibSpikes.length === 0) {
+                alert("No trigger pulls detected. Gyro threshold remains " + GYRO_SHOT_THRESHOLD + ".");
+            } else {
+                calibSpikes.sort((a, b) => b - a);
+                let topSpikes = calibSpikes.slice(0, 3);
+                let avgSpike = topSpikes.reduce((a, b) => a + b, 0) / topSpikes.length;
+                GYRO_SHOT_THRESHOLD = Math.max(30, Math.round(avgSpike * 0.6));
+                alert(`Calibration Complete!\nNew Threshold set to: ${GYRO_SHOT_THRESHOLD}`);
+            }
+            document.getElementById('status').innerText = "Target Locked. Ready to Record.";
+            document.getElementById('status').style.color = "#00ff00";
+        }, 5000);
     }
 
-    // --- OPENCV PROCESSING ENGINE ---
+    // ==========================================
+    // SCRUB WHEEL & PLAYBACK
+    // ==========================================
+    const wheel = document.getElementById('scrubWheel');
+    const spinner = document.getElementById('wheelSpinner');
+    const playBtn = document.getElementById('btnPlayPause');
+    
+    let isDraggingWheel = false, lastAngle = 0, visualAngle = 0, playbackProgress = 0, isAutoPlaying = false, playInterval;
+
+    wheel.addEventListener('pointerdown', (e) => {
+        if (!isAnalyzing || sensorLog.length === 0 || e.target === playBtn) return;
+        isDraggingWheel = true; pausePlayback();
+        wheel.setPointerCapture(e.pointerId);
+        let rect = wheel.getBoundingClientRect();
+        lastAngle = Math.atan2(e.clientY - (rect.top + rect.height/2), e.clientX - (rect.left + rect.width/2));
+    });
+
+    wheel.addEventListener('pointermove', (e) => {
+        if (!isDraggingWheel) return;
+        let rect = wheel.getBoundingClientRect();
+        let angle = Math.atan2(e.clientY - (rect.top + rect.height/2), e.clientX - (rect.left + rect.width/2));
+        let delta = angle - lastAngle;
+        if (delta > Math.PI) delta -= 2 * Math.PI;
+        if (delta < -Math.PI) delta += 2 * Math.PI;
+        lastAngle = angle;
+
+        visualAngle += delta * (180 / Math.PI);
+        playbackProgress += delta / (Math.PI * 4); 
+        if (playbackProgress < 0) playbackProgress = 0;
+        if (playbackProgress > 1) playbackProgress = 1;
+
+        applyPlaybackProgress();
+    });
+
+    wheel.addEventListener('pointerup', () => isDraggingWheel = false);
+    wheel.addEventListener('pointercancel', () => isDraggingWheel = false);
+
+    playBtn.onclick = function() {
+        if (isAutoPlaying) pausePlayback(); else startPlayback();
+    };
+
+    function startPlayback() {
+        isAutoPlaying = true; playBtn.innerText = "⏸";
+        if (playbackProgress >= 1) playbackProgress = 0; 
+        let videoElement = document.getElementById('webcam');
+        if (videoElement.duration) videoElement.play();
+
+        playInterval = setInterval(() => {
+            if (videoElement.duration) { playbackProgress = videoElement.currentTime / videoElement.duration; } 
+            else { playbackProgress += 0.01; }
+            visualAngle = playbackProgress * 720;
+            applyPlaybackProgress(true);
+            if (playbackProgress >= 1) pausePlayback();
+        }, 30);
+    }
+
+    function pausePlayback() {
+        isAutoPlaying = false; playBtn.innerText = "▶";
+        clearInterval(playInterval);
+        document.getElementById('webcam').pause();
+    }
+
+    function applyPlaybackProgress(isAuto = false) {
+        if (sensorLog.length === 0) return;
+        spinner.style.transform = `rotate(${visualAngle}deg)`;
+
+        let idx = Math.floor(playbackProgress * (sensorLog.length - 1));
+        let s = sensorLog[idx];
+        if (!s) return;
+        
+        let videoElement = document.getElementById('webcam');
+        if (!isAuto && videoElement.duration) { videoElement.currentTime = playbackProgress * videoElement.duration; }
+
+        if (viewer) viewer.orientation = `${s.tp}deg ${s.ty}deg ${s.tr}deg`;
+
+        if (Math.abs(s.gx) > GYRO_SHOT_THRESHOLD || Math.abs(s.gy) > GYRO_SHOT_THRESHOLD) {
+            let now = performance.now();
+            if (viewer && (!viewer.lastSpike || now - viewer.lastSpike > 500)) {
+                viewer.lastSpike = now; viewer.currentTime = 0; viewer.play(); 
+            }
+        }
+
+        let canvas = document.getElementById('gyroGraph');
+        let playhead = document.getElementById('graphPlayhead');
+        if (canvas && playhead) {
+            playhead.style.display = 'block';
+            playhead.style.left = (playbackProgress * canvas.width) + 'px';
+        }
+
+        let currentMs = s.time_ms;
+        document.querySelectorAll('.result-card').forEach(c => {
+            let cardTime = parseFloat(c.getAttribute('data-time'));
+            if (cardTime <= currentMs) c.classList.add('visible');
+            else c.classList.remove('visible');
+        });
+
+        document.getElementById('timeLabel').innerText = (currentMs / 1000).toFixed(2) + "s";
+    }
+
+    // ==========================================
+    // 2. VISION BASELINE 
+    // ==========================================
     function grab() {
         let cvs = document.getElementById('calcCanvas');
-        let video = document.getElementById('webcam');
-        cvs.getContext('2d').drawImage(video, 0, 0, procW, procH); 
+        cvs.getContext('2d').drawImage(document.getElementById('webcam'), 0,0,procW,procH);
         return cv.imread(cvs);
     }
 
     function setBaseline() {
-        if (!activeTargetId || !stream) return;
+        if(!orb) { orb = new cv.ORB(); matcher = new cv.BFMatcher(cv.NORM_HAMMING, true); refKP = new cv.KeyPointVector(); refDesc = new cv.Mat(); }
+        let frame = grab();
+        let gray = new cv.Mat(), thresh = new cv.Mat();
+        cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+        cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 5);
+        let contours = new cv.MatVector(), hierarchy = new cv.Mat();
+        cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
         
-        try {
-            let frame = grab();
-            let gray = new cv.Mat(), thresh = new cv.Mat();
-            cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY); 
-            cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 5);
-            
-            let contours = new cv.MatVector(), hierarchy = new cv.Mat(); 
-            cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-            
-            let best = null, maxA = 0;
-            for(let i=0; i<contours.size(); i++) {
-                let a = cv.contourArea(contours.get(i));
-                if(a > 2000 && a > maxA) { maxA = a; best = cv.minEnclosingCircle(contours.get(i)); }
-            }
-            
-            if(!best) { 
-                alert("Target ring not detected. Move closer/further.");
-                frame.delete(); gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete(); 
-                return; 
-            }
+        let best = null, maxA = 0;
+        for(let i=0; i<contours.size(); i++) {
+            let a = cv.contourArea(contours.get(i));
+            if(a > 3000 && a > maxA) { maxA = a; best = cv.minEnclosingCircle(contours.get(i)); }
+        }
+        if(!best) { alert("Center target!"); frame.delete(); gray.delete(); thresh.delete(); return; }
 
-            targetRadius = Math.round(best.radius);
-            cropSize = targetRadius * 2 + 60;
-            let rx = Math.max(0, best.center.x - cropSize/2), ry = Math.max(0, best.center.y - cropSize/2);
-            
-            targetCenter = { x: best.center.x - rx, y: best.center.y - ry };
-            
-            const target = targets.find(t => t.id === activeTargetId);
-            if (target) {
-                target.baseline = { x: best.center.x, y: best.center.y };
-                saveToPhone();
-            }
-            
-            let roi = frame.roi(new cv.Rect(rx, ry, Math.min(frame.cols-rx, cropSize), Math.min(frame.rows-ry, cropSize)));
-            
-            if(refGray) refGray.delete();
-            refGray = new cv.Mat(); 
-            cv.cvtColor(roi, refGray, cv.COLOR_RGBA2GRAY);
-            
-            let mask = cv.Mat.zeros(roi.rows, roi.cols, cv.CV_8UC1);
-            cv.circle(mask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 10, new cv.Scalar(255), -1);
-            
-            orb.detectAndCompute(refGray, mask, refKP, refDesc);
-            
-            document.getElementById('btnNewShot').disabled = false;
-            document.getElementById('status').innerText = "Baseline Locked!"; 
-            document.getElementById('status').style.color = "#ff3b30";
-            
-            frame.delete(); gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete(); mask.delete(); roi.delete();
-        } catch (e) {
-            logError("Baseline Error: " + e.message);
+        targetRadius = Math.round(best.radius); cropSize = targetRadius * 2 + 60;
+        let rx = Math.max(0, best.center.x - cropSize/2), ry = Math.max(0, best.center.y - cropSize/2);
+        targetCenter = { x: best.center.x - rx, y: best.center.y - ry };
+
+        let roi = frame.roi(new cv.Rect(rx, ry, Math.min(procW-rx, cropSize), Math.min(procH-ry, cropSize)));
+        if(refGray) refGray.delete();
+        refGray = new cv.Mat(); cv.cvtColor(roi, refGray, cv.COLOR_RGBA2GRAY);
+        
+        let mask = cv.Mat.zeros(roi.rows, roi.cols, cv.CV_8UC1);
+        cv.circle(mask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 10, new cv.Scalar(255), -1);
+        orb.detectAndCompute(refGray, mask, refKP, refDesc);
+
+        document.getElementById('btnRecord').disabled = false;
+        document.getElementById('btnBase').style.display = 'none';
+        document.getElementById('btnCalibrate').style.display = 'none';
+        document.getElementById('status').innerText = "Target Locked.";
+        frame.delete(); gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete(); mask.delete(); roi.delete();
+    }
+
+    // ==========================================
+    // 3. RECORDING FLOW
+    // ==========================================
+    function toggleRecording() {
+        let btn = document.getElementById('btnRecord');
+        if (!isRecording) {
+            recordedChunks = []; sensorLog = []; persistentShots = []; telemetrySpikes = []; candidates = []; blacklist = [];
+            document.getElementById('shotList').innerHTML = ""; 
+            document.getElementById('kinematicList').innerHTML = "";
+            document.getElementById('deductionList').innerHTML = "";
+            document.getElementById('overlayCanvas').getContext('2d').clearRect(0,0,procW,procH);
+            document.getElementById('playbackControls').style.display = 'none';
+
+            let options = { mimeType: 'video/webm; codecs=vp8' };
+            if (!MediaRecorder.isTypeSupported('video/webm; codecs=vp8')) options = { mimeType: 'video/mp4' }; 
+
+            mediaRecorder = new MediaRecorder(stream, options);
+            mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) recordedChunks.push(e.data); };
+            mediaRecorder.onstop = triggerAnalysisPhase;
+
+            recordingStartTime = performance.now();
+            isRecording = true; mediaRecorder.start();
+            btn.innerText = "Stop & Analyze"; btn.classList.add("recording");
+        } else {
+            isRecording = false; mediaRecorder.stop(); btn.style.display = 'none'; 
         }
     }
 
-    function startFullScan() {
-        if (!refGray) return;
+    function triggerAnalysisPhase() {
+        document.getElementById('status').innerText = "⚙️ ANALYZING DATA...";
+        drawRecordedGraph(); 
         
-        let btn = document.getElementById('btnNewShot');
-        btn.innerText = "SETTLING...";
-        btn.style.background = "#ffaa00"; 
-        btn.disabled = true;
-        document.getElementById('btnBaseline').disabled = true;
+        // 1. Process Telemetry List (Creates Column 2)
+        processEntireSensorLog();
+
+        let videoElement = document.getElementById('webcam');
+        videoElement.srcObject = null; 
+        videoElement.src = URL.createObjectURL(new Blob(recordedChunks, { type: mediaRecorder.mimeType }));   
         
-        setTimeout(() => {
-            btn.innerText = "SCANNING (3s)...";
-            btn.style.background = "#ff3b30"; 
-            candidates = []; 
-            isScanning = true;
-            scanStartTime = performance.now();
-            scanLoop();
-        }, 1000);
+        // 2. Process Vision List (Creates Columns 1 & 3)
+        videoElement.onplay = () => { isAnalyzing = true; trackingLoopPlayback(); };
+        videoElement.onended = () => {
+            isAnalyzing = false;
+            document.getElementById('status').innerText = "✅ ANALYSIS COMPLETE";
+            
+            document.getElementById('playbackControls').style.display = 'flex';
+            playbackProgress = 1.0; visualAngle = 720; applyPlaybackProgress();
+            
+            let btn = document.getElementById('btnRecord');
+            btn.style.display = 'block'; btn.style.background = "#007bff";
+            btn.innerText = "Reset Camera for Next Run"; btn.classList.remove("recording");
+            btn.onclick = () => location.reload(); 
+        };
+        videoElement.play();
     }
 
-    function scanLoop() {
-        if (!isScanning) return;
-        if (performance.now() - scanStartTime > 3000) {
-            endScan();
-            return;
+    // ==========================================
+    // 4. KINEMATICS (COLUMN 2) & GRAPH
+    // ==========================================
+    function drawRecordedGraph() {
+        const canvas = document.getElementById('gyroGraph');
+        if (!canvas || sensorLog.length === 0) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const step = canvas.width / sensorLog.length;
+
+        function plotLine(key, color) {
+            ctx.strokeStyle = color; ctx.lineWidth = 1.0; ctx.beginPath();
+            for (let i = 0; i < sensorLog.length; i++) {
+                let y = (canvas.height / 2) - ((sensorLog[i][key] || 0) * 0.5); 
+                if (i === 0) ctx.moveTo(i * step, y); else ctx.lineTo(i * step, y);
+            }
+            ctx.stroke();
         }
-
-        try { processFrame(); } catch (e) { logError("Scan error: " + e.message); isScanning = false; return; }
-        
-        candidates.forEach(c => { c.f -= 0.05; });
-        candidates = candidates.filter(c => c.f > 0);
-        requestAnimationFrame(scanLoop);
+        plotLine('gx', '#ff4444'); plotLine('gy', '#44ff44'); plotLine('gz', '#4444ff'); 
     }
 
-    // THE UPGRADED RECOGNITION PIPELINE
-    function processFrame() {
-        let frame = null, grayLive = null, liveKP = null, liveDesc = null, matches = null;
-        let matSrc = null, matDst = null, H = null, invH = null, warped = null;
-        let refBlurred = null, warpedBlurred = null, diff = null, thresh = null;
-        let kernel = null, liveMask = null, maskedThresh = null, contours = null, hier = null;
-
-        try {
-            frame = grab();
-            grayLive = new cv.Mat();
-            liveKP = new cv.KeyPointVector();
-            liveDesc = new cv.Mat();
-            matches = new cv.DMatchVector();
-            
-            cv.cvtColor(frame, grayLive, cv.COLOR_RGBA2GRAY);
-            orb.detectAndCompute(grayLive, new cv.Mat(), liveKP, liveDesc);
-            
-            if(!liveDesc.empty()) {
-                matcher.match(refDesc, liveDesc, matches);
-                let good = [];
-                for(let i=0; i<matches.size(); i++) { 
-                    if(matches.get(i).distance < 48) good.push(matches.get(i));
+    function processEntireSensorLog() {
+        let lastSpikeTime = -1000, shotCounter = 0;
+        for (let i = 0; i < sensorLog.length; i++) {
+            let s = sensorLog[i];
+            if (s.time_ms - lastSpikeTime > 500) {
+                if (Math.abs(s.gx) > GYRO_SHOT_THRESHOLD || Math.abs(s.gy) > GYRO_SHOT_THRESHOLD || Math.abs(s.ax) > ACCEL_SHOT_THRESHOLD) {
+                    lastSpikeTime = s.time_ms; shotCounter++;
+                    let preShotSlice = sensorLog.filter(data => data.time_ms >= s.time_ms - 400 && data.time_ms <= s.time_ms);
+                    diagnoseKinematics(preShotSlice, shotCounter);
                 }
-                
-                if(good.length > 15) { 
-                    let srcP = [], dstP = [];
-                    for(let m of good) { 
-                        srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); 
-                        dstP.push(liveKP.get(m.trainIdx).pt.x, liveKP.get(m.trainIdx).pt.y); 
-                    }
-                    
-                    matSrc = cv.matFromArray(good.length, 1, cv.CV_32FC2, srcP);
-                    matDst = cv.matFromArray(good.length, 1, cv.CV_32FC2, dstP);
-                    H = cv.findHomography(matSrc, matDst, cv.RANSAC, 5.0);
-                    
-                    if(!H.empty()) {
-                        invH = new cv.Mat();
-                        cv.invert(H, invH, cv.DECOMP_LU);
-                        
-                        warped = new cv.Mat(); 
-                        cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
-                        
-                        refBlurred = new cv.Mat();
-                        warpedBlurred = new cv.Mat();
-                        cv.GaussianBlur(refGray, refBlurred, new cv.Size(5, 5), 0);
-                        cv.GaussianBlur(warped, warpedBlurred, new cv.Size(5, 5), 0);
+            }
+        }
+    }
 
-                        diff = new cv.Mat();
-                        thresh = new cv.Mat();
-                        cv.absdiff(refBlurred, warpedBlurred, diff); 
-                        
-                        cv.threshold(diff, thresh, 50, 255, cv.THRESH_BINARY); 
-                        
-                        // BIGGER KERNEL TO WIPE OUT THIN LINES (Homography jitter)
-                        kernel = cv.Mat.ones(5, 5, cv.CV_8U); 
-                        cv.morphologyEx(thresh, thresh, cv.MORPH_OPEN, kernel);
-                        
-                        liveMask = cv.Mat.zeros(refGray.rows, refGray.cols, cv.CV_8UC1);
-                        cv.circle(liveMask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 15, new cv.Scalar(255), -1);
-                        
-                        maskedThresh = new cv.Mat(); 
-                        thresh.copyTo(maskedThresh, liveMask);
+    function diagnoseKinematics(dataSlice, shotId) {
+        let down = false, up = false, left = false, right = false, pitch = false, yaw = false, roll = false;
+        
+        // 2-PHASE KINEMATIC SPLIT
+        let eventTime = dataSlice[dataSlice.length - 1].time_ms;
+        let prepPhase = dataSlice.filter(s => s.time_ms < eventTime - 100);
+        let flinchPhase = dataSlice.filter(s => s.time_ms >= eventTime - 100);
 
-                        contours = new cv.MatVector();
-                        hier = new cv.Mat();
-                        cv.findContours(maskedThresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                        
-                        for(let i=0; i<contours.size(); i++) {
-                            let cnt = contours.get(i), area = cv.contourArea(cnt);
+        for (let s of dataSlice) {
+            let adjustedZ = (s.az || 0) - 9.8; 
+            if (s.ax > ACCEL_MOVE_THRESH) right = true;
+            if (s.ax < -ACCEL_MOVE_THRESH) left = true;
+            if (adjustedZ > ACCEL_MOVE_THRESH) up = true;
+            if (adjustedZ < -ACCEL_MOVE_THRESH) down = true;
+            if (Math.abs(s.gx) > GYRO_MOVE_THRESH) roll = true;
+            if (Math.abs(s.gy) > GYRO_MOVE_THRESH) pitch = true;
+            if (Math.abs(s.gz) > GYRO_MOVE_THRESH) yaw = true;
+        }
+
+        let movesArray = [];
+        if (down) movesArray.push("Down"); if (up) movesArray.push("Up"); if (left) movesArray.push("Left");
+        if (right) movesArray.push("Right"); if (pitch) movesArray.push("Pitch"); if (yaw) movesArray.push("Yaw");
+        if (roll) movesArray.push("Roll");
+
+        telemetrySpikes.push({ time: eventTime, moves: movesArray });
+
+        let allTeleMatches = [];
+        mistakeDB.forEach(m => {
+            let score = 0;
+            m.tele.forEach(pattern => { if (movesArray.includes(pattern)) score += 10; });
+            
+            // Phase-based Score Boosting
+            if (m.name === "Anticipating Recoil" && flinchPhase.some(s => s.gy < -GYRO_MOVE_THRESH)) score += 20;
+            if (m.name === "Jerking the trigger" && prepPhase.some(s => Math.abs(s.gz) > GYRO_MOVE_THRESH)) score += 20;
+
+            if (score > 0) allTeleMatches.push({name: m.name, score: score});
+        });
+        
+        allTeleMatches.sort((a,b) => b.score - a.score);
+        let top3Tele = allTeleMatches.slice(0, 3);
+        while(top3Tele.length < 3) top3Tele.push({name: "N/A", score: 0});
+
+        let matchesHtml = top3Tele.map((m, i) => `
+            <div class="mistake">
+                <span style="color:#ddd">${i+1}. ${m.name}</span>
+                <span style="color:#ff3b30">${m.score > 0 ? m.score + ' pt' : ''}</span>
+            </div>`).join('');
+
+        document.getElementById('kinematicList').insertAdjacentHTML('beforeend', `
+            <div class="card result-card" data-time="${eventTime}" style="border-left-color: #ff3b30;">
+                <h4 style="color: #ff3b30;">Event K-${shotId}</h4>
+                <div style="font-size: 8px; color: #888; margin-bottom: 4px;">RAW: ${movesArray.join(',') || "None"}</div>
+                ${matchesHtml}
+            </div>
+        `);
+    }
+
+    // ==========================================
+    // 5. VISION (COL 1) & COMBINED (COL 3)
+    // ==========================================
+    function trackingLoopPlayback() {
+        if(!isAnalyzing) return;
+        let v = document.getElementById('webcam');
+        if (v.readyState >= 2) {
+            let frame = grab(), grayLive = new cv.Mat(), liveKP = new cv.KeyPointVector(), liveDesc = new cv.Mat(), matches = new cv.DMatchVector();
+            try {
+                cv.cvtColor(frame, grayLive, cv.COLOR_RGBA2GRAY);
+                orb.detectAndCompute(grayLive, new cv.Mat(), liveKP, liveDesc);
+                if(!liveDesc.empty()) {
+                    matcher.match(refDesc, liveDesc, matches);
+                    let good = [];
+                    for(let i=0; i<matches.size(); i++) { if(matches.get(i).distance < 48) good.push(matches.get(i)); }
+                    if(good.length > 10) {
+                        let srcP = [], dstP = [];
+                        for(let m of good) { srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); dstP.push(liveKP.get(m.trainIdx).pt.x, liveKP.get(m.trainIdx).pt.y); }
+                        let matSrc = cv.matFromArray(good.length, 1, cv.CV_32FC2, srcP), matDst = cv.matFromArray(good.length, 1, cv.CV_32FC2, dstP);
+                        let H = cv.findHomography(matSrc, matDst, cv.RANSAC, 5.0);
+                        if(!H.empty()) {
+                            let invH = new cv.Mat(); cv.invert(H, invH, cv.DECOMP_LU);
+                            let warped = new cv.Mat(); cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
                             
-                            // STRICTER AREA LIMITS (Ignores giant bullseye)
-                            if(area > 40 && area < 300) { 
-                                let perimeter = cv.arcLength(cnt, true);
-                                let circularity = (4 * Math.PI * area) / (perimeter * perimeter);
-                                
-                                let rect = cv.boundingRect(cnt);
-                                let aspectRatio = rect.width / rect.height;
-                                
-                                // SOLIDITY CHECK TO KILL NUMBERS
-                                let hull = new cv.Mat();
-                                cv.convexHull(cnt, hull);
-                                let solidity = area / (cv.contourArea(hull) || 1);
-                                hull.delete(); 
-                                
-                                // The Three Gates of Validation
-                                let isRoundish = (aspectRatio >= 0.6 && aspectRatio <= 1.6);
-                                let isSolid = (solidity > 0.80); 
-                                let isCircle = (circularity > 0.45);
+                            // UPGRADE: Blurring to kill camera noise
+                            let refBlurred = new cv.Mat(); let warpedBlurred = new cv.Mat();
+                            cv.GaussianBlur(refGray, refBlurred, new cv.Size(5, 5), 0);
+                            cv.GaussianBlur(warped, warpedBlurred, new cv.Size(5, 5), 0);
+                            
+                            let diff = new cv.Mat(), thresh = new cv.Mat();
+                            cv.absdiff(refBlurred, warpedBlurred, diff); 
+                            cv.threshold(diff, thresh, 45, 255, cv.THRESH_BINARY);
+                            
+                            // UPGRADE: Median Blur to erase crescent moons (homography jitter)
+                            cv.medianBlur(thresh, thresh, 5);
+                            
+                            // UPGRADE: Morphological Open
+                            let kernel = cv.Mat.ones(5, 5, cv.CV_8U); 
+                            cv.morphologyEx(thresh, thresh, cv.MORPH_OPEN, kernel);
+                            
+                            let liveMask = cv.Mat.zeros(refGray.rows, refGray.cols, cv.CV_8UC1);
+                            cv.circle(liveMask, new cv.Point(targetCenter.x, targetCenter.y), targetRadius - 15, new cv.Scalar(255), -1);
+                            let maskedThresh = new cv.Mat(); thresh.copyTo(maskedThresh, liveMask);
 
-                                if(isRoundish && isSolid && isCircle) {
-                                    let M = cv.moments(cnt);
-                                    let p = {x: M.m10/M.m00, y: M.m01/M.m00};
-                                    if (Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y) > targetRadius - 15) continue;
+                            let contours = new cv.MatVector(), hier = new cv.Mat();
+                            cv.findContours(maskedThresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                            
+                            let currentHoles = [];
+                            for(let i=0; i<contours.size(); i++) {
+                                let cnt = contours.get(i), area = cv.contourArea(cnt);
+                                // UPGRADE: Widened Area (15 to 800) to stop missed shots
+                                if(area > 15 && area < 800) {
+                                    let M = cv.moments(cnt); let p = {x: M.m10/M.m00, y: M.m01/M.m00};
+                                    let distFromCenter = Math.hypot(p.x - targetCenter.x, p.y - targetCenter.y);
+                                    if (distFromCenter > targetRadius - 15) continue; 
                                     
-                                    let finalX = p.x - targetCenter.x;
-                                    let finalY = p.y - targetCenter.y;
+                                    if(blacklist.some(b => Math.hypot(b.x-p.x, b.y-p.y) < PROXIMITY)) continue;
                                     
-                                    const target = targets.find(t => t.id === activeTargetId);
-                                    let knownHoles = target && target.scans ? target.scans.flatMap(s => s.holes) : [];
-                                    let isOldHole = knownHoles.some(old => Math.hypot(old.x - finalX, old.y - finalY) < OLD_HOLE_TOLERANCE);
+                                    let perimeter = cv.arcLength(cnt, true);
+                                    let circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+                                    let rect = cv.boundingRect(cnt);
+                                    let aspectRatio = rect.width / rect.height;
                                     
-                                    if (isOldHole) continue; 
+                                    let hull = new cv.Mat(); cv.convexHull(cnt, hull);
+                                    let solidity = area / (cv.contourArea(hull) || 1); hull.delete();
                                     
-                                    let c = candidates.find(can => Math.hypot(can.x - finalX, can.y - finalY) < PROXIMITY);
-                                    if (c) { c.f++; } else { candidates.push({x: finalX, y: finalY, f: 1}); }
+                                    // UPGRADE: Strict Solidity to kill text/numbers
+                                    let isRoundish = (aspectRatio >= 0.5 && aspectRatio <= 2.0);
+                                    let isSolid = (solidity > 0.85); 
+                                    let isCircle = (circularity > 0.40);
+
+                                    if(isRoundish && isSolid && isCircle) {
+                                        currentHoles.push(p);
+                                    } else if(!isSolid || !isCircle) {
+                                        blacklist.push(p); 
+                                    }
                                 }
                             }
+                            processShots(currentHoles); drawOverlay(H);
+                            invH.delete(); warped.delete(); diff.delete(); thresh.delete(); liveMask.delete(); maskedThresh.delete(); contours.delete(); hier.delete();
+                            refBlurred.delete(); warpedBlurred.delete(); kernel.delete();
                         }
+                        matSrc.delete(); matDst.delete(); H.delete();
                     }
                 }
-            }
-        } finally {
-            if (frame) frame.delete();
-            if (grayLive) grayLive.delete();
-            if (liveKP) liveKP.delete();
-            if (liveDesc) liveDesc.delete();
-            if (matches) matches.delete();
-            if (matSrc) matSrc.delete();
-            if (matDst) matDst.delete();
-            if (H) H.delete();
-            if (invH) invH.delete();
-            if (warped) warped.delete();
-            if (refBlurred) refBlurred.delete();
-            if (warpedBlurred) warpedBlurred.delete();
-            if (diff) diff.delete();
-            if (thresh) thresh.delete();
-            if (kernel) kernel.delete();
-            if (liveMask) liveMask.delete();
-            if (maskedThresh) maskedThresh.delete();
-            if (contours) contours.delete();
-            if (hier) hier.delete();
+            } catch(e) { console.error(e); } finally { frame.delete(); grayLive.delete(); liveKP.delete(); liveDesc.delete(); matches.delete(); }
         }
+        if (isAnalyzing) requestAnimationFrame(trackingLoopPlayback);
     }
 
-    function endScan() {
-        isScanning = false;
-        const target = targets.find(t => t.id === activeTargetId);
-        
-        let confirmedHoles = candidates.filter(c => c.f >= REQ_FRAMES);
-        let newValidHoles = confirmedHoles.map(h => ({x: h.x, y: h.y}));
+    function processShots(holes) {
+        for(let h of holes) {
+            // Absolute Deadzone Tolerance
+            if(persistentShots.some(s => Math.hypot(s.x-h.x, s.y-h.y) < OLD_HOLE_TOLERANCE)) continue;
+            
+            let c = candidates.find(can => Math.hypot(can.x-h.x, can.y-h.y) < PROXIMITY);
+            if(c) { 
+                c.f++; 
+                if(c.f >= REQ_FRAMES) {
+                    let vidTimeMs = document.getElementById('webcam').currentTime * 1000;
+                    let diag = getDiag131(h.x, h.y);
+                    persistentShots.push({id: Date.now(), x:h.x, y:h.y, d: diag});
+                    let shotID = persistentShots.length;
 
-        if (newValidHoles.length > 0) {
-            target.scans.push({ id: Date.now().toString(), name: `Scan ${target.scans.length + 1}`, holes: newValidHoles });
-            saveToPhone();
-            renderScansList();
-        }
+                    // COLUMN 1: EXACTLY 3 VISION RESULTS
+                    let visHtml = diag.m.map((m, i) => `
+                        <div class="mistake">
+                            <span style="color:#ddd">${i+1}. ${m.n}</span>
+                            <span style="color:#00aaff">${m.p}</span>
+                        </div>`).join('');
+                        
+                    document.getElementById('shotList').insertAdjacentHTML('beforeend', `
+                        <div class="card result-card" data-time="${vidTimeMs}" style="border-left-color: #00aaff;">
+                            <h4 style="color:#00aaff;">Shot V-${shotID}</h4>
+                            <div style="font-size:8px; color:#888; margin-bottom:4px;">ZONE: ${diag.z}</div>
+                            ${visHtml}
+                        </div>
+                    `);
 
-        drawTargetState(target);
+                    // COLUMN 3: COMBINED DEDUCTION LOGIC
+                    let closestSpike = null, minDiff = 1000;
+                    telemetrySpikes.forEach(spike => {
+                        let diff = Math.abs(spike.time - vidTimeMs);
+                        if (diff < minDiff) { minDiff = diff; closestSpike = spike; }
+                    });
+                    let tMoves = closestSpike ? closestSpike.moves : [];
 
-        let btn = document.getElementById('btnNewShot');
-        btn.innerText = "🔴 Scan (3s)";
-        btn.style.background = ""; 
-        btn.classList.add("btn-green");
-        
-        document.getElementById('webcam').pause(); 
-        
-        btn.style.display = "none"; 
-        document.getElementById('btnBaseline').disabled = true; 
-        document.getElementById('btnUnfreeze').style.display = "block"; 
-        
-        document.getElementById('status').innerText = `Scan Frozen. ${newValidHoles.length} New Shots.`;
-        document.getElementById('status').style.color = "#00ff00";
-    }
+                    let scored = mistakeDB.map(m => {
+                        let score = 0, matchVis = false, matchTele = false;
+                        m.tele.forEach(pattern => { if (tMoves.includes(pattern)) { score += 10; matchTele = true; } });
+                        m.vis.forEach(z => { if (diag.z === z) { score += 15; matchVis = true; } });
+                        
+                        let tag = "NONE", tagColor = "#555";
+                        if (matchVis && matchTele) { tag = "COMBINED"; tagColor = "#aa00ff"; score += 20; }
+                        else if (matchVis) { tag = "VISION"; tagColor = "#00aaff"; }
+                        else if (matchTele) { tag = "TELEMETRY"; tagColor = "#ff3b30"; }
 
-    function unfreezeCamera() {
-        document.getElementById('webcam').play(); 
-        
-        document.getElementById('btnUnfreeze').style.display = "none";
-        document.getElementById('btnNewShot').style.display = "block";
-        document.getElementById('btnNewShot').disabled = false;
-        document.getElementById('btnBaseline').disabled = false;
-        
-        document.getElementById('status').innerText = "Live. Ready to Scan.";
-        document.getElementById('status').style.color = "#00aaff";
-    }
+                        return { name: m.name, score: score, tag: tag, tagColor: tagColor };
+                    });
 
-    function drawTargetState(target) {
-        let cvs = document.getElementById('displayCanvas');
-        let ctx = cvs.getContext('2d');
-        ctx.clearRect(0, 0, procW, procH);
-        
-        if (!target || !target.scans) return;
-        let totalScans = target.scans.length;
+                    scored.sort((a,b) => b.score - a.score);
+                    
+                    let top3 = scored.slice(0, 3);
+                    while(top3.length < 3) top3.push({name: "N/A", score: 0, tag: "NONE", tagColor: "#555"});
 
-        let cx = (target.baseline && target.baseline.x) ? target.baseline.x : procW / 2;
-        let cy = (target.baseline && target.baseline.y) ? target.baseline.y : procH / 2;
+                    let top3Html = top3.map((m, i) => `
+                        <div class="mistake" style="align-items: center;">
+                            <span style="color:#fff; flex:1;">${i+1}. ${m.name}</span>
+                            <span class="tag" style="border:1px solid ${m.tagColor}; color:${m.tagColor}; margin-left:2px;">${m.tag}</span>
+                        </div>`).join('');
 
-        target.scans.forEach((scan, index) => {
-            let isLastScan = (index === totalScans - 1);
-            scan.holes.forEach(h => {
-                let drawX = h.x + cx;
-                let drawY = h.y + cy;
+                    document.getElementById('deductionList').insertAdjacentHTML('beforeend', `
+                        <div class="card result-card" data-time="${vidTimeMs}" style="border-left-color: #aa00ff;">
+                            <h4 style="color:#aa00ff;">Deduct ${shotID}</h4>
+                            ${top3Html}
+                        </div>
+                    `);
 
-                ctx.beginPath();
-                ctx.arc(drawX, drawY, 9, 0, 6.28); 
-                ctx.lineWidth = 5;
-                ctx.strokeStyle = "rgba(0,0,0,0.8)";
-                ctx.stroke();
-
-                ctx.beginPath();
-                ctx.arc(drawX, drawY, 8, 0, 6.28); 
-                ctx.lineWidth = 2;
-                if (isLastScan) {
-                    ctx.strokeStyle = "#00ff00"; 
-                    ctx.stroke();
-                    ctx.beginPath();
-                    ctx.moveTo(drawX - 12, drawY); ctx.lineTo(drawX + 12, drawY);
-                    ctx.moveTo(drawX, drawY - 12); ctx.lineTo(drawX, drawY + 12);
-                    ctx.lineWidth = 2;
-                    ctx.strokeStyle = "#00ff00";
-                    ctx.stroke();
-                } else {
-                    ctx.strokeStyle = "#ff3b30"; 
-                    ctx.stroke();
+                    candidates = candidates.filter(can => can !== c);
                 }
-            });
+            } else candidates.push({x:h.x, y:h.y, f:1});
+        }
+        candidates.forEach(c => { c.f -= 0.1; });
+        candidates = candidates.filter(c => c.f > 0);
+    }
+
+    function getDiag131(x, y) {
+        let dx = x - targetCenter.x, dy = targetCenter.y - y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 15) return {z:"Center", m:[{n:"Clean Break", p:"Good"}, {n:"Stable Stance", p:"Good"}, {n:"Smooth Trigger", p:"Good"}]}; 
+        
+        let a = Math.atan2(dy, dx) * (180/Math.PI); if(a < 0) a += 360;
+        if(a > 45 && a <= 135) return {z:"High", m:[{n:"Riding Recoil", p:"High"},{n:"Heeling", p:"Med"},{n:"Breathing", p:"Low"}]};
+        if(a > 135 && a <= 225) return {z:"Left", m:[{n:"Trigger Depth", p:"High"},{n:"Grip Tension", p:"Med"},{n:"Wrist Roll", p:"Low"}]};
+        if(a > 225 && a <= 315) return {z:"Low", m:[{n:"Trigger Jerking", p:"High"},{n:"Anticipation", p:"Med"},{n:"Flinching", p:"Low"}]};
+        return {z:"Right", m:[{n:"Finger Tip Pressure", p:"High"},{n:"Thumb Pressure", p:"Med"},{n:"Cheek Weld", p:"Low"}]};
+    }
+
+    function drawOverlay(H) {
+        let ctx = document.getElementById('overlayCanvas').getContext('2d');
+        ctx.clearRect(0,0,procW,procH);
+        persistentShots.forEach((s, idx) => {
+            let p = cv.matFromArray(3, 1, cv.CV_64F, [s.x, s.y, 1.0]);
+            let dP = new cv.Mat(); cv.gemm(H, p, 1, new cv.Mat(), 0, dP);
+            let x = dP.data64F[0]/dP.data64F[2], y = dP.data64F[1]/dP.data64F[2];
+            ctx.beginPath(); ctx.arc(x,y,10,0,6.28); ctx.fillStyle="rgba(0,255,0,0.7)"; ctx.fill();
+            ctx.strokeStyle="white"; ctx.stroke();
+            ctx.fillStyle="white"; ctx.font="11px sans-serif"; ctx.fillText("#"+(idx+1), x+14, y);
+            p.delete(); dP.delete();
         });
     }
 </script>
-
-<script async src="https://docs.opencv.org/4.8.0/opencv.js" onerror="logError('Failed to download OpenCV script from CDN.');"></script>
-
 </body>
 </html>
